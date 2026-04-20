@@ -65,6 +65,18 @@ export async function patchHooks(codexHome) {
   hooks.hooks.UserPromptSubmit ||= [];
   hooks.hooks.Stop ||= [];
 
+  const removeLegacyCommands = (entries) => {
+    return (entries || []).filter((entry) => {
+      const raw = JSON.stringify(entry);
+      return !raw.includes('/skills/autocode/scripts/autocode.py\" hook')
+        && !raw.includes('/skills/autocode/scripts/autocode.py\" stop-hook');
+    });
+  };
+
+  hooks.hooks.SessionStart = removeLegacyCommands(hooks.hooks.SessionStart);
+  hooks.hooks.UserPromptSubmit = removeLegacyCommands(hooks.hooks.UserPromptSubmit);
+  hooks.hooks.Stop = removeLegacyCommands(hooks.hooks.Stop);
+
   const ensureCommand = (entries, command, statusMessage = undefined, timeout = undefined) => {
     const existing = entries.find((entry) => Array.isArray(entry.hooks) && entry.hooks.some((hook) => hook.command === command));
     if (existing) return;

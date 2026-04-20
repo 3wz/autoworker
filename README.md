@@ -78,3 +78,8 @@ This repo uses:
 
 - CI on push / PR
 - npm publish on semver tag pushes like `v0.1.0`
+
+
+## Compatibility alias
+
+The package installs `autoworker` as the primary skill and keeps `autocode` only as a compatibility alias. Hooks are normalized to the autoworker entrypoints so you do not run both in parallel.
