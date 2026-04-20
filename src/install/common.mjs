@@ -68,8 +68,7 @@ export async function patchHooks(codexHome) {
   const removeLegacyCommands = (entries) => {
     return (entries || []).filter((entry) => {
       const raw = JSON.stringify(entry);
-      return !raw.includes('/skills/autocode/scripts/autocode.py\" hook')
-        && !raw.includes('/skills/autocode/scripts/autocode.py\" stop-hook');
+      return !raw.includes('/skills/autocode/scripts/autocode.py');
     });
   };
 

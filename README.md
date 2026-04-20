@@ -1,47 +1,45 @@
 # autoworker
 
-`autoworker` is an **OMX + Codex** supervision layer for tmux-based worker sessions.
+`autoworker` 是一个 **基于 OMX + Codex + tmux** 的监督增强层，用来让一个 supervisor 会话自动监督另一个 code/worker 会话，在 worker 停住时接管判断并继续驱动。
 
-It is **not** a replacement for `oh-my-codex`.
-It sits on top of OMX and adds:
+它**不是** `oh-my-codex` 的替代品，而是运行在 OMX 之上的增强层。
 
-- worker stop detection
-- supervisor notification
-- auto fallback dispatch
-- stop-hook scoping so supervisor sessions are not incorrectly blocked by worker-side Ralph state
-- a compatibility alias for older `autocode` users
+## 当前支持范围
 
-## Current support
-
-Current v0 only supports:
+当前 v0 只支持：
 
 - `oh-my-codex` / `omx`
 - Codex
-- tmux workflows
+- tmux 工作流
 
-It does **not** currently target Claude Code, non-tmux workflows, or non-OMX environments.
+当前**不支持**：
 
-## Prerequisites
+- Claude Code
+- 非 tmux 工作流
+- 非 OMX 环境
 
-Before using `autoworker`, you must already have:
+## 前置依赖
 
-- `oh-my-codex` installed and `omx` available in `PATH`
-- Codex installed
-- tmux available
+使用 `autoworker` 前，你必须已经安装：
 
-## Install
+- `oh-my-codex`，且 `omx` 在 `PATH` 中可用
+- Codex
+- tmux
+
+## 安装
 
 ```bash
 npx autoworker setup
 ```
 
-This will:
+安装器会：
 
-- install `autoworker` skill files into `~/.codex/skills/autoworker`
-- install an `autocode` compatibility alias into `~/.codex/skills/autocode`
-- update `~/.codex/hooks.json` so Stop / SessionStart / UserPromptSubmit use `autoworker`
+- 安装主技能到 `~/.codex/skills/autoworker`
+- 安装兼容别名到 `~/.codex/skills/autocode`
+- 把 `~/.codex/hooks.json` 收口为 `autoworker` 主入口
+- 安装技能内 stop wrapper，避免 supervisor 会话被 worker 的 Ralph 状态误拦
 
-## Commands
+## 命令
 
 ```bash
 autoworker setup
@@ -50,36 +48,38 @@ autoworker status
 autoworker uninstall
 ```
 
-## Compatibility
+## 兼容策略
 
-`autoworker` is the primary name.
+- 对外主名：`autoworker`
+- 兼容别名：`autocode`
 
-`autocode` remains available as a compatibility alias so old prompts and local habits keep working.
+也就是说，旧的 `autocode` 提示词和习惯仍可继续工作，但新的正式名称是 `autoworker`。
 
-## Stop hook behavior
+## Stop hook 行为
 
-`autoworker` installs a skill-local stop wrapper:
+`autoworker` 自带技能内 stop wrapper：
 
-- worker/code sessions still go through the OMX stop block
-- supervisor/plan sessions are allowed to stop
-- dirty state like `active=true` plus `completed_at` can be normalized by the wrapper/doctor flow
+- worker/code 会话仍然保留 OMX 原生 stop block
+- supervisor/plan 会话直接放行
+- 脏 state（例如 `active=true` 且已有 `completed_at`）可由 wrapper/doctor 路径进一步治理
 
-## Development
+## 开发与验证
 
-Minimal repo smoke test:
+最小 smoke：
 
 ```bash
 npm run smoke:install
 ```
 
-## Release
+## 发布
 
-This repo uses:
+仓库自带：
 
-- CI on push / PR
-- npm publish on semver tag pushes like `v0.1.0`
+- CI：push / pull_request
+- 发布：推送 semver tag（例如 `v0.1.0`）时发布 npm
 
+## English
 
-## Compatibility alias
+英文说明见：
 
-The package installs `autoworker` as the primary skill and keeps `autocode` only as a compatibility alias. Hooks are normalized to the autoworker entrypoints so you do not run both in parallel.
+- `README.en.md`
