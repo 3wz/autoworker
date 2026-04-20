@@ -1,0 +1,37 @@
+{
+  "name": "autoworker",
+  "version": "0.1.0",
+  "description": "Autoworker is an OMX + Codex supervision layer for long-running worker sessions.",
+  "type": "module",
+  "bin": {
+    "autoworker": "bin/autoworker.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "assets",
+    "scripts",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "smoke:install": "node scripts/smoke-install.mjs",
+    "test": "npm run smoke:install"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/3wz/autoworker.git"
+  },
+  "keywords": [
+    "omx",
+    "oh-my-codex",
+    "codex",
+    "tmux",
+    "worker",
+    "automation"
+  ],
+  "license": "MIT"
+}
