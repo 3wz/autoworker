@@ -14,7 +14,7 @@ const result = spawnSync('node', [path.join(process.cwd(), 'bin', 'autoworker.js
 process.stdout.write(result.stdout || '');
 process.stderr.write(result.stderr || '');
 if (result.status !== 0) process.exit(result.status || 1);
-for (const rel of ['skills/autoworker/SKILL.md', 'skills/autocode/SKILL.md', 'hooks.json']) {
+for (const rel of ['skills/autoworker/SKILL.md', 'hooks.json']) {
   const full = path.join(codexHome, rel);
   await fs.access(full);
   console.log('verified', full);

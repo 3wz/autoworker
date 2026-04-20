@@ -1,5 +1,7 @@
 # autoworker
 
+> Language / 语言: [简体中文](./README.md) · **English**
+
 `autoworker` is an **OMX + Codex + tmux** supervision layer for long-running worker sessions.
 
 It is **not** a replacement for `oh-my-codex`; it sits on top of OMX and adds stop detection, supervisor notification, fallback dispatch, and stop-hook scoping so supervisor sessions are not incorrectly blocked by worker-side Ralph state.
@@ -31,7 +33,6 @@ npx autoworker setup
 The installer will:
 
 - install the primary skill into `~/.codex/skills/autoworker`
-- install the compatibility alias into `~/.codex/skills/autocode`
 - normalize `~/.codex/hooks.json` to the `autoworker` entrypoints
 - install a skill-local stop wrapper so supervisor sessions are not blocked by worker Ralph state
 
@@ -43,13 +44,6 @@ autoworker doctor
 autoworker status
 autoworker uninstall
 ```
-
-## Compatibility
-
-- Primary name: `autoworker`
-- Compatibility alias: `autocode`
-
-The old `autocode` prompt/skill entry remains available, but `autoworker` is the canonical public name.
 
 ## Stop hook behavior
 

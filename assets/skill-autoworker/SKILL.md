@@ -32,10 +32,6 @@ python3 scripts/autoworker.py dispatch --cwd "$PWD" --message "继续执行..."
 python3 scripts/autoworker.py dispatch-batch --cwd "$PWD" --goal "..." --step "..." --step "..." --verify "..."
 ```
 
-## 兼容别名
-
-`autocode` 仍然保留为兼容别名，但新的主名是 `autoworker`。
-
 ## Stop hook 说明
 
 `autoworker` 自带一个技能内 stop wrapper：

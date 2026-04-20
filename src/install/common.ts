@@ -8,40 +8,55 @@ import { spawnSync } from 'node:child_process';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..');
 
-export function codexHomeFromArgs(args = []) {
+type HookCommand = {
+  type: 'command';
+  command: string;
+  statusMessage?: string;
+  timeout?: number;
+};
+
+type HookEntry = {
+  hooks?: HookCommand[];
+};
+
+type HooksFile = {
+  hooks?: Record<string, HookEntry[]>;
+};
+
+export function codexHomeFromArgs(args: string[] = []) {
   const idx = args.indexOf('--codex-home');
   if (idx >= 0 && args[idx + 1]) return path.resolve(args[idx + 1]);
   return process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
 }
 
-export function assetPath(...parts) {
+export function assetPath(...parts: string[]) {
   return path.join(ROOT, 'assets', ...parts);
 }
 
-export async function ensureDir(dir) {
+export async function ensureDir(dir: string) {
   await fs.mkdir(dir, { recursive: true });
 }
 
-export async function copyDir(src, dest) {
+export async function copyDir(src: string, dest: string) {
   await ensureDir(path.dirname(dest));
   await fs.rm(dest, { recursive: true, force: true });
   await fs.cp(src, dest, { recursive: true });
 }
 
-export async function readJsonIfExists(p) {
+export async function readJsonIfExists<T = unknown>(filePath: string): Promise<T | null> {
   try {
-    return JSON.parse(await fs.readFile(p, 'utf8'));
+    return JSON.parse(await fs.readFile(filePath, 'utf8')) as T;
   } catch {
     return null;
   }
 }
 
-export async function writeJson(p, value) {
-  await ensureDir(path.dirname(p));
-  await fs.writeFile(p, JSON.stringify(value, null, 2) + '\n', 'utf8');
+export async function writeJson(filePath: string, value: unknown) {
+  await ensureDir(path.dirname(filePath));
+  await fs.writeFile(filePath, JSON.stringify(value, null, 2) + '\n', 'utf8');
 }
 
-export function commandOk(command, args = ['--version']) {
+export function commandOk(command: string, args: string[] = ['--version']) {
   const result = spawnSync(command, args, { encoding: 'utf8' });
   return result.status === 0;
 }
@@ -53,9 +68,9 @@ export function requireOmx(skip = false) {
   }
 }
 
-export async function patchHooks(codexHome) {
+export async function patchHooks(codexHome: string) {
   const hooksPath = path.join(codexHome, 'hooks.json');
-  const hooks = await readJsonIfExists(hooksPath) || { hooks: {} };
+  const hooks = (await readJsonIfExists<HooksFile>(hooksPath)) || { hooks: {} };
   hooks.hooks ||= {};
 
   const autoworkerScript = `python3 \"${path.join(codexHome, 'skills', 'autoworker', 'scripts', 'autoworker.py')}\"`;
@@ -65,8 +80,8 @@ export async function patchHooks(codexHome) {
   hooks.hooks.UserPromptSubmit ||= [];
   hooks.hooks.Stop ||= [];
 
-  const removeLegacyCommands = (entries) => {
-    return (entries || []).filter((entry) => {
+  const removeLegacyCommands = (entries: HookEntry[] = []) => {
+    return entries.filter((entry) => {
       const raw = JSON.stringify(entry);
       return !raw.includes('/skills/autocode/scripts/autocode.py');
     });
@@ -76,10 +91,10 @@ export async function patchHooks(codexHome) {
   hooks.hooks.UserPromptSubmit = removeLegacyCommands(hooks.hooks.UserPromptSubmit);
   hooks.hooks.Stop = removeLegacyCommands(hooks.hooks.Stop);
 
-  const ensureCommand = (entries, command, statusMessage = undefined, timeout = undefined) => {
+  const ensureCommand = (entries: HookEntry[], command: string, statusMessage?: string, timeout?: number) => {
     const existing = entries.find((entry) => Array.isArray(entry.hooks) && entry.hooks.some((hook) => hook.command === command));
     if (existing) return;
-    const hook = { type: 'command', command };
+    const hook: HookCommand = { type: 'command', command };
     if (statusMessage) hook.statusMessage = statusMessage;
     if (timeout) hook.timeout = timeout;
     entries.push({ hooks: [hook] });
@@ -109,22 +124,21 @@ export async function patchHooks(codexHome) {
   return hooksPath;
 }
 
-export async function installSkills(codexHome) {
+export async function installSkills(codexHome: string) {
   const skillsRoot = path.join(codexHome, 'skills');
   await ensureDir(skillsRoot);
   await copyDir(assetPath('skill-autoworker'), path.join(skillsRoot, 'autoworker'));
-  await copyDir(assetPath('skill-autocode'), path.join(skillsRoot, 'autocode'));
+  await fs.rm(path.join(skillsRoot, 'autocode'), { recursive: true, force: true });
 }
 
-export function printPaths(codexHome) {
+export function printPaths(codexHome: string) {
   console.log(JSON.stringify({
     codexHome,
     autoworkerSkill: path.join(codexHome, 'skills', 'autoworker'),
-    autocodeAlias: path.join(codexHome, 'skills', 'autocode'),
     hooks: path.join(codexHome, 'hooks.json')
   }, null, 2));
 }
 
-export function fileExists(p) {
-  return fssync.existsSync(p);
+export function fileExists(filePath: string) {
+  return fssync.existsSync(filePath);
 }

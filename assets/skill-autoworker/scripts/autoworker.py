@@ -313,9 +313,6 @@ def ensure_watcher(cwd: Path, state: dict[str, Any], log_path: Path) -> dict[str
 def load_state(cwd: Path) -> tuple[Path, Path, dict[str, Any]]:
     state_path, log_path = repo_state_paths(cwd)
     state = safe_read_json(state_path, default=None)
-    if not state:
-        legacy_state_path = cwd / ".omx" / "state" / "autocode-state.json"
-        state = safe_read_json(legacy_state_path, default={}) or {}
     return state_path, log_path, state or {}
 
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { setupCommand } from '../src/cli/setup.mjs';
-import { doctorCommand } from '../src/cli/doctor.mjs';
-import { statusCommand } from '../src/cli/status.mjs';
-import { uninstallCommand } from '../src/cli/uninstall.mjs';
+import { setupCommand } from '../dist/cli/setup.js';
+import { doctorCommand } from '../dist/cli/doctor.js';
+import { statusCommand } from '../dist/cli/status.js';
+import { uninstallCommand } from '../dist/cli/uninstall.js';
 
 const [, , cmd = 'help', ...args] = process.argv;
 
