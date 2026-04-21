@@ -47,28 +47,49 @@ autoworker status
 autoworker uninstall
 ```
 
-Running `autoworker` with no arguments now defaults to launch mode. It uses the current directory as `cwd` and creates or reuses two tmux sessions:
+Running `autoworker` with no arguments now defaults to launch mode. It uses the current directory as `cwd` and creates or reuses a single tmux session with two panes:
 
-- `planner`
-- `worker`
+- `planner` pane
+- `worker` pane
 
-If a session already exists, it is reused without being killed, and the CLI prints `created` or `reused` for each session.
+The current terminal enters the `planner` pane by default, while the `worker` pane is ready in the same tmux view.
+
+The Codex thread names stay stable as:
+
+- `<dirname>-planner`
+- `<dirname>-worker`
+
+`autoworker` prefers the newest available Codex CLI it can find and prints `codex_bin` / `codex_version` during launch. Override explicitly with:
+
+```bash
+AUTOWORKER_CODEX_BIN=/path/to/codex autoworker
+```
+
+Codex is launched with `--no-alt-screen` by default so tmux scrollback remains usable.
+
+tmux interaction tips:
+
+- The autoworker session enables `mouse on`, so macOS terminals can click panes and scroll history with the mouse.
+- Use the default tmux prefix `Ctrl-b` plus arrow keys to switch panes from the keyboard.
+- Scroll with the mouse wheel, or press `Ctrl-b` then `[` to enter copy-mode and use arrows/PageUp/PageDown.
 
 ## Stop hook behavior
 
 `autoworker` installs a skill-local stop wrapper:
 
-- worker/code sessions still go through the OMX native stop block
-- supervisor/plan sessions are allowed to stop
-- dirty state like `active=true` with `completed_at` can be normalized by wrapper/doctor paths
+- the `planner` pane is allowed to stop directly
+- the `worker` pane still goes through the OMX native stop hook
+- the wrapper reads pane-first role data from tmux session env
 
 ## Development
 
 Minimal smoke test:
 
 ```bash
-npm run smoke:install
+npm test
 ```
+
+The lightweight smoke tests live under `src/__tests__/` and run as compiled TypeScript output from `dist/__tests__/`.
 
 ## Release
 

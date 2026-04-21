@@ -5,3 +5,5 @@ npm-debug.log*
 .pnpm-debug.log*
 .omx/
 dist/
+__pycache__/
+*.pyc

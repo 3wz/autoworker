@@ -87,6 +87,20 @@ def current_session(socket_path: str | None = None) -> str | None:
         return None
 
 
+def session_environment(session_name: str | None, key: str, socket_path: str | None = None) -> str | None:
+    if not session_name:
+        return None
+    try:
+        raw = run_tmux(["show-environment", "-t", session_name, key], socket_path=socket_path).strip()
+    except Exception:
+        return None
+    if not raw or raw == f"-{key}":
+        return None
+    if raw.startswith(f"{key}="):
+        return raw[len(key) + 1:]
+    return raw or None
+
+
 def list_panes(socket_path: str | None = None) -> list[dict[str, str]]:
     fmt = "#{session_name}\t#{window_index}.#{pane_index}\t#{pane_id}\t#{pane_current_command}\t#{pane_active}\t#{pane_current_path}\t#{pane_title}"
     out = run_tmux(["list-panes", "-a", "-F", fmt], socket_path=socket_path)
@@ -114,6 +128,13 @@ def capture_tail(pane_id: str, socket_path: str | None = None, lines: int = 40) 
         return run_tmux(["capture-pane", "-p", "-t", pane_id, "-S", f"-{lines}"], socket_path=socket_path)
     except Exception:
         return ""
+
+
+def pane_session_name(pane_id: str, socket_path: str | None = None) -> str | None:
+    try:
+        return run_tmux(["display-message", "-p", "-t", pane_id, "#{session_name}"], socket_path=socket_path).strip() or None
+    except Exception:
+        return None
 
 
 def tail_excerpt(text: str, last_lines: int = 6) -> str:
@@ -191,6 +212,70 @@ def signature_for(pane: dict[str, str], tail: str) -> str:
 def repo_state_paths(cwd: Path) -> tuple[Path, Path]:
     omx = cwd / ".omx"
     return omx / "state" / "autoworker-state.json", omx / "logs" / "autoworker-watch.log"
+
+
+def path_is_within(path_str: str | None, root_str: str | None) -> bool:
+    if not path_str or not root_str:
+        return False
+    try:
+        path_obj = Path(path_str).expanduser().resolve()
+        root_obj = Path(root_str).expanduser().resolve()
+    except Exception:
+        return False
+    return path_obj == root_obj or root_obj in path_obj.parents
+
+
+def resolve_session_layout(cwd: Path, state: dict[str, Any], socket_path: str | None) -> dict[str, str] | None:
+    candidates: list[str] = []
+    for session_name in [
+        current_session(socket_path=socket_path),
+        state.get("tmux_session"),
+        state.get("planner_session"),
+        state.get("worker_session"),
+        cwd.name,
+    ]:
+        if session_name and session_name not in candidates:
+            candidates.append(session_name)
+
+    for session_name in candidates:
+        repo_root = session_environment(session_name, "AUTOWORKER_REPO_ROOT", socket_path=socket_path)
+        planner_pane = session_environment(session_name, "AUTOWORKER_PLANNER_PANE", socket_path=socket_path)
+        worker_pane = session_environment(session_name, "AUTOWORKER_WORKER_PANE", socket_path=socket_path)
+        if not repo_root or not planner_pane or not worker_pane:
+            continue
+        if not path_is_within(str(cwd), repo_root):
+            continue
+        return {
+            "session_name": session_name,
+            "repo_root": repo_root,
+            "planner_pane": planner_pane,
+            "worker_pane": worker_pane,
+        }
+    return None
+
+
+def sync_state_with_layout(cwd: Path, state: dict[str, Any], socket_path: str | None) -> dict[str, Any]:
+    layout = resolve_session_layout(cwd, state, socket_path)
+    if not layout:
+        return state
+    for legacy_key in ["target_pane", "target_session", "supervisor_pane", "supervisor_session"]:
+        state.pop(legacy_key, None)
+    session_name = layout["session_name"]
+    planner_pane = layout["planner_pane"]
+    worker_pane = layout["worker_pane"]
+    state.update(
+        {
+            "enabled": True,
+            "repo": layout["repo_root"],
+            "tmux_session": session_name,
+            "planner_pane": planner_pane,
+            "worker_pane": worker_pane,
+            "planner_session": session_name,
+            "worker_session": session_name,
+            "updated_at": now_iso(),
+        }
+    )
+    return state
 
 
 def process_alive(pid: int | None) -> bool:
@@ -321,10 +406,12 @@ def print_status(state: dict[str, Any]) -> None:
         print("autoworker: 当前项目未启用")
         return
     print(f"enabled: {state.get('enabled', False)}")
-    print(f"target_pane: {state.get('target_pane', '—')}")
-    print(f"target_session: {state.get('target_session', '—')}")
-    print(f"supervisor_pane: {state.get('supervisor_pane', '—')}")
-    print(f"supervisor_session: {state.get('supervisor_session', '—')}")
+    print(f"planner_pane: {state.get('planner_pane', '—')}")
+    print(f"worker_pane: {state.get('worker_pane', '—')}")
+    print(f"planner_session: {state.get('planner_session', '—')}")
+    print(f"worker_session: {state.get('worker_session', '—')}")
+    print(f"repo: {state.get('repo', '—')}")
+    print(f"tmux_session: {state.get('tmux_session', '—')}")
     print(f"watcher_pid: {state.get('watcher_pid', '—')}")
     print(f"last_event_at: {state.get('last_event_at', '—')}")
     print(f"last_worker_state: {state.get('last_worker_state', '—')}")
@@ -342,27 +429,14 @@ def cmd_start(args: argparse.Namespace) -> int:
     cwd = Path(args.cwd).resolve()
     state_path, log_path, state = load_state(cwd)
     socket_path = resolve_tmux_socket()
-    supervisor_pane = current_pane(socket_path=socket_path)
-    supervisor_session = current_session(socket_path=socket_path)
-    target_pane, candidates, reason = detect_candidates(cwd, args.target, args.pane, supervisor_pane, socket_path)
-    if not target_pane:
-        print("autoworker: 无法唯一确定目标 pane")
-        print(f"reason: {reason}")
-        for pane in candidates[:8]:
-            print(f"- {pane['session_name']} {pane['pane_ref']} {pane['pane_id']} {pane['pane_current_command']} {pane['pane_current_path']}")
-        return 2
-    pane = next((p for p in candidates if p["pane_id"] == target_pane), None)
-    if not pane:
-        pane = next(p for p in list_panes(socket_path=socket_path) if p["pane_id"] == target_pane)
+    state = sync_state_with_layout(cwd, state, socket_path)
+    if not state.get("planner_pane") or not state.get("worker_pane"):
+        print("autoworker: 当前 tmux session 未发现 planner/worker pane 标记，请先运行 autoworker launch")
+        return 1
     state.update(
         {
             "enabled": True,
             "repo": str(cwd),
-            "target_pane": target_pane,
-            "target_session": pane.get("session_name"),
-            "target_hint": args.target,
-            "supervisor_pane": supervisor_pane,
-            "supervisor_session": supervisor_session,
             "tmux_socket_path": socket_path,
             "dispatch_template": args.dispatch_template or state.get("dispatch_template") or DEFAULT_DISPATCH_TEMPLATE,
             "event_template": state.get("event_template") or DEFAULT_EVENT_TEMPLATE,
@@ -372,7 +446,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             "poll_ms": args.poll_ms,
             "auto_fallback_after_ms": args.auto_fallback_after_ms,
             "updated_at": now_iso(),
-            "last_reason": f"started:{reason}",
+            "last_reason": "started:session-layout",
             "last_pane_signature": None,
             "last_change_at": now_iso(),
             "last_event_signature": None,
@@ -384,13 +458,15 @@ def cmd_start(args: argparse.Namespace) -> int:
     )
     state = ensure_watcher(cwd, state, log_path)
     safe_write_json(state_path, state)
-    print(f"autoworker: 已启动，worker={state['target_session']} {target_pane} supervisor={supervisor_session} {supervisor_pane}")
+    print(f"autoworker: 已启动，planner={state['planner_session']} {state['planner_pane']} worker={state['worker_session']} {state['worker_pane']}")
     print(f"watcher_pid: {state.get('watcher_pid')}")
     return 0
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    _, _, state = load_state(Path(args.cwd).resolve())
+    cwd = Path(args.cwd).resolve()
+    _, _, state = load_state(cwd)
+    state = sync_state_with_layout(cwd, state, resolve_tmux_socket())
     print_status(state)
     return 0
 
@@ -418,11 +494,13 @@ def cmd_stop(args: argparse.Namespace) -> int:
 def cmd_retarget(args: argparse.Namespace) -> int:
     cwd = Path(args.cwd).resolve()
     state_path, log_path, state = load_state(cwd)
+    state = sync_state_with_layout(cwd, state, state.get("tmux_socket_path") or resolve_tmux_socket())
     if not state.get("enabled"):
         print("autoworker: 当前未启用，请先 start")
         return 1
     socket_path = state.get("tmux_socket_path") or resolve_tmux_socket()
-    target_pane, candidates, reason = detect_candidates(cwd, args.target, args.pane, state.get("supervisor_pane"), socket_path)
+    planner_pane = state.get("planner_pane")
+    target_pane, candidates, reason = detect_candidates(cwd, args.target, args.pane, planner_pane, socket_path)
     if not target_pane:
         print("autoworker: retarget 无法唯一确定目标")
         print(f"reason: {reason}")
@@ -433,8 +511,8 @@ def cmd_retarget(args: argparse.Namespace) -> int:
     if not pane:
         pane = next(p for p in list_panes(socket_path=socket_path) if p["pane_id"] == target_pane)
     state.update({
-        "target_pane": target_pane,
-        "target_session": pane.get("session_name"),
+        "worker_pane": target_pane,
+        "worker_session": pane.get("session_name"),
         "target_hint": args.target,
         "updated_at": now_iso(),
         "last_reason": f"retarget:{reason}",
@@ -444,34 +522,34 @@ def cmd_retarget(args: argparse.Namespace) -> int:
     })
     state = ensure_watcher(cwd, state, log_path)
     safe_write_json(state_path, state)
-    print(f"autoworker: 已切换目标到 {state['target_session']} {target_pane}")
+    print(f"autoworker: 已切换 worker 到 {state['worker_session']} {state['worker_pane']}")
     return 0
 
 
 def cmd_hook(args: argparse.Namespace) -> int:
     cwd = Path(args.cwd).resolve()
     state_path, log_path, state = load_state(cwd)
+    socket_path = resolve_tmux_socket() or state.get("tmux_socket_path")
+    state = sync_state_with_layout(cwd, state, socket_path)
     if not state.get("enabled"):
         return 0
-    socket_path = resolve_tmux_socket() or state.get("tmux_socket_path")
     state["last_hook_at"] = now_iso()
     if socket_path:
         state["tmux_socket_path"] = socket_path
-    pane = current_pane(socket_path=socket_path)
     sess = current_session(socket_path=socket_path)
-    if pane and pane != state.get("target_pane"):
-        state["supervisor_pane"] = pane
-    if sess and pane and pane != state.get("target_pane"):
-        state["supervisor_session"] = sess
+    if sess:
+        state["tmux_session"] = sess
+        state["planner_session"] = sess
+        state["worker_session"] = sess
     state = ensure_watcher(cwd, state, log_path)
     safe_write_json(state_path, state)
     return 0
 
 
 def _notify_supervisor_once(cwd: Path, state_path: Path, state: dict[str, Any], socket_path: str | None) -> int:
-    worker_pane = state.get("target_pane")
-    supervisor_pane = state.get("supervisor_pane")
-    if not worker_pane or not supervisor_pane or worker_pane == supervisor_pane:
+    worker_pane = state.get("worker_pane")
+    planner_pane = state.get("planner_pane")
+    if not worker_pane or not planner_pane or worker_pane == planner_pane:
         state["last_reason"] = "stop-hook-missing-pane"
         state["updated_at"] = now_iso()
         safe_write_json(state_path, state)
@@ -479,7 +557,7 @@ def _notify_supervisor_once(cwd: Path, state_path: Path, state: dict[str, Any], 
     panes = {p["pane_id"]: p for p in list_panes(socket_path=socket_path)}
     pane = panes.get(worker_pane)
     if not pane:
-        state["last_reason"] = "stop-hook-target-missing"
+        state["last_reason"] = "stop-hook-worker-missing"
         state["updated_at"] = now_iso()
         safe_write_json(state_path, state)
         return 0
@@ -488,7 +566,7 @@ def _notify_supervisor_once(cwd: Path, state_path: Path, state: dict[str, Any], 
     should_send, reason = should_notify_supervisor(state, pane, tail, sig)
     if should_send:
         message = build_event_message(state, reason, tail)
-        send_prompt_to_pane(supervisor_pane, message, socket_path=socket_path, clear_input=False, submit_key_presses=2)
+        send_prompt_to_pane(planner_pane, message, socket_path=socket_path, clear_input=False, submit_key_presses=2)
         state["last_event_at"] = now_iso()
         state["last_reason"] = reason
         state["event_count"] = int(state.get("event_count", 0)) + 1
@@ -505,12 +583,14 @@ def _notify_supervisor_once(cwd: Path, state_path: Path, state: dict[str, Any], 
 def cmd_stop_hook(args: argparse.Namespace) -> int:
     cwd = Path(args.cwd).resolve()
     state_path, _, state = load_state(cwd)
+    socket_path = resolve_tmux_socket() or state.get("tmux_socket_path")
+    state = sync_state_with_layout(cwd, state, socket_path)
     if not state.get("enabled"):
         return 0
-    socket_path = resolve_tmux_socket() or state.get("tmux_socket_path")
     current = current_pane(socket_path=socket_path)
-    if current != state.get("target_pane"):
+    if current != state.get("worker_pane"):
         return 0
+    safe_write_json(state_path, state)
     return _notify_supervisor_once(cwd, state_path, state, socket_path)
 
 
@@ -535,7 +615,8 @@ def _dispatch_to_worker(cwd: Path, pane: str | None, message: str) -> int:
         print("autoworker: 当前未启用")
         return 1
     socket_path = state.get("tmux_socket_path") or resolve_tmux_socket()
-    target = pane or state.get("target_pane")
+    state = sync_state_with_layout(cwd, state, socket_path)
+    target = pane or state.get("worker_pane")
     if not target:
         print("autoworker: 没有可用 worker pane")
         return 1
@@ -576,7 +657,7 @@ def should_notify_supervisor(state: dict[str, Any], pane: dict[str, str], tail: 
     if sig != prev_sig:
         state["last_pane_signature"] = sig
         state["last_change_at"] = now_iso()
-        state["target_current_command"] = pane["pane_current_command"]
+        state["worker_current_command"] = pane["pane_current_command"]
     last_change_ms = parse_iso_ms(state.get("last_change_at")) or now
 
     tail_l = tail.lower()
@@ -701,8 +782,8 @@ def build_event_message(state: dict[str, Any], reason: str, tail: str) -> str:
     tail_text = tail_excerpt(tail)
     template = state.get("event_template") or DEFAULT_EVENT_TEMPLATE
     return template.format(
-        worker_session=state.get("target_session") or "",
-        worker_pane=state.get("target_pane") or "",
+        worker_session=state.get("worker_session") or "",
+        worker_pane=state.get("worker_pane") or "",
         reason=reason,
         cwd=state.get("repo") or "",
         tail=tail_text,
@@ -712,11 +793,13 @@ def build_event_message(state: dict[str, Any], reason: str, tail: str) -> str:
 def cmd_watch(args: argparse.Namespace) -> int:
     cwd = Path(args.cwd).resolve()
     state_path, _, state = load_state(cwd)
+    state = sync_state_with_layout(cwd, state, state.get("tmux_socket_path") or args.socket or resolve_tmux_socket())
     if not state.get("enabled"):
         return 0
     socket_path = args.socket or state.get("tmux_socket_path") or resolve_tmux_socket()
     while True:
         state = safe_read_json(state_path, default={}) or {}
+        state = sync_state_with_layout(cwd, state, socket_path)
         if not state.get("enabled"):
             return 0
         socket_path = state.get("tmux_socket_path") or socket_path or resolve_tmux_socket()
@@ -734,17 +817,17 @@ def cmd_watch(args: argparse.Namespace) -> int:
             safe_write_json(state_path, state)
             time.sleep(max(1, int(state.get("poll_ms", 15000)) / 1000))
             continue
-        worker_pane = state.get("target_pane")
-        supervisor_pane = state.get("supervisor_pane")
+        worker_pane = state.get("worker_pane")
+        planner_pane = state.get("planner_pane")
         pane = panes.get(worker_pane)
         if not pane:
-            state["last_reason"] = "target-missing"
+            state["last_reason"] = "worker-missing"
             state["updated_at"] = now_iso()
             safe_write_json(state_path, state)
             time.sleep(max(1, int(state.get("poll_ms", 15000)) / 1000))
             continue
-        if not supervisor_pane or supervisor_pane == worker_pane:
-            state["last_reason"] = "supervisor-missing"
+        if not planner_pane or planner_pane == worker_pane:
+            state["last_reason"] = "planner-missing"
             state["updated_at"] = now_iso()
             safe_write_json(state_path, state)
             time.sleep(max(1, int(state.get("poll_ms", 15000)) / 1000))
@@ -754,7 +837,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
         should_send, reason = should_notify_supervisor(state, pane, tail, sig)
         if should_send:
             message = build_event_message(state, reason, tail)
-            send_prompt_to_pane(supervisor_pane, message, socket_path=socket_path, clear_input=False, submit_key_presses=2)
+            send_prompt_to_pane(planner_pane, message, socket_path=socket_path, clear_input=False, submit_key_presses=2)
             state["last_event_at"] = now_iso()
             state["last_reason"] = reason
             state["event_count"] = int(state.get("event_count", 0)) + 1

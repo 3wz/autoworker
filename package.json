@@ -11,7 +11,6 @@
     "dist",
     "src",
     "assets",
-    "scripts",
     "README.md",
     "LICENSE"
   ],
@@ -21,8 +20,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepack": "npm run build",
-    "smoke:install": "npm run build && node scripts/smoke-install.mjs",
-    "test": "npm run smoke:install"
+    "test:install": "node dist/__tests__/smoke-install.test.js",
+    "test:launch": "node dist/__tests__/launch-smoke.test.js",
+    "test:wrapper": "node dist/__tests__/stop-wrapper-smoke.test.js",
+    "test": "npm run build && npm run test:install && npm run test:launch && npm run test:wrapper"
   },
   "repository": {
     "type": "git",

@@ -15,8 +15,12 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org
       - run: npm ci
-      - run: npm pack --dry-run
-      - run: npm run smoke:install
+      - run: npm test
+      - run: npm pack
       - run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: autoworker-*.tgz

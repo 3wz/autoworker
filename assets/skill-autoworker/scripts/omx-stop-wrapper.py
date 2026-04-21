@@ -20,6 +20,13 @@ def current_tmux_pane():
     return os.environ.get('TMUX_PANE', '').strip()
 
 
+def current_tmux_session():
+    pane = current_tmux_pane()
+    if pane:
+        return run_tmux(['display-message', '-p', '-t', pane, '#{session_name}'])
+    return run_tmux(['display-message', '-p', '#{session_name}'])
+
+
 def resolve_tmux_socket():
     raw = os.environ.get('TMUX', '').strip()
     if not raw:
@@ -45,6 +52,37 @@ def current_pane_path():
     if not pane:
         return None
     return run_tmux(['display-message', '-p', '-t', pane, '#{pane_current_path}'])
+
+
+def session_environment(session_name: str | None, key: str) -> str | None:
+    if not session_name:
+        return None
+    raw = run_tmux(['show-environment', '-t', session_name, key])
+    if not raw or raw == f'-{key}':
+        return None
+    if raw.startswith(f'{key}='):
+        return raw[len(key) + 1:]
+    return raw
+
+
+def current_session_layout(payload: dict):
+    session_name = current_tmux_session()
+    repo_root = session_environment(session_name, 'AUTOWORKER_REPO_ROOT')
+    planner_pane = session_environment(session_name, 'AUTOWORKER_PLANNER_PANE')
+    worker_pane = session_environment(session_name, 'AUTOWORKER_WORKER_PANE')
+    if not session_name or not repo_root or not planner_pane or not worker_pane:
+        return None
+    payload_cwd = (payload.get('cwd') or '').strip() or None
+    pane_path = current_pane_path()
+    contexts = [payload_cwd, os.getcwd(), pane_path]
+    if not any(path_is_within(context_path, repo_root) for context_path in contexts if context_path):
+        return None
+    return {
+        'session_name': session_name,
+        'repo_root': repo_root,
+        'planner_pane': planner_pane,
+        'worker_pane': worker_pane,
+    }
 
 
 def iter_state_candidates(start: str | None):
@@ -89,6 +127,10 @@ def iter_matching_states(payload: dict):
             if not isinstance(state, dict) or not state.get('enabled'):
                 continue
             repo = (state.get('repo') or '').strip()
+            planner_pane = (state.get('planner_pane') or '').strip()
+            worker_pane = (state.get('worker_pane') or '').strip()
+            if not planner_pane or not worker_pane:
+                continue
             if repo and not any(
                 path_is_within(context_path, repo)
                 for context_path in (payload_cwd, os.getcwd(), pane_path)
@@ -102,11 +144,17 @@ def should_bypass_stop(payload: dict) -> bool:
     current_pane = current_tmux_pane()
     if not current_pane:
         return False
+    layout = current_session_layout(payload)
+    if layout:
+        planner_pane = (layout.get('planner_pane') or '').strip()
+        worker_pane = (layout.get('worker_pane') or '').strip()
+        if current_pane == planner_pane and current_pane != worker_pane:
+            return True
+        return False
     for state in iter_matching_states(payload):
-        supervisor_pane = (state.get('supervisor_pane') or '').strip()
-        worker_pane = (state.get('target_pane') or '').strip()
-        if current_pane == supervisor_pane and current_pane != worker_pane:
-            # 只对 supervisor 会话放行；worker 仍交给 OMX 原生 stop hook 决定
+        planner_pane = (state.get('planner_pane') or '').strip()
+        worker_pane = (state.get('worker_pane') or '').strip()
+        if current_pane == planner_pane and current_pane != worker_pane:
             return True
     return False
 

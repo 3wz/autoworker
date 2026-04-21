@@ -51,28 +51,49 @@ autoworker status
 autoworker uninstall
 ```
 
-默认直接执行 `autoworker` 时，会以当前目录为 `cwd` 创建或复用两个 tmux session：
+默认直接执行 `autoworker` 时，会以当前目录为 `cwd` 创建或复用一个 tmux session，并在主 window 中准备两个 pane：
 
-- `planner`
-- `worker`
+- `planner` pane
+- `worker` pane
 
-如果 session 已存在，不会销毁，只会复用并输出 `created` / `reused` 状态。
+当前终端会默认进入 `planner` pane，`worker` 会同时就绪并可在同屏切换。
+
+对应的 Codex thread name 会稳定使用：
+
+- `<dirname>-planner`
+- `<dirname>-worker`
+
+`autoworker` 会优先选择可用的较新 Codex CLI，并在启动输出里显示 `codex_bin` / `codex_version`。如需强制指定，可设置：
+
+```bash
+AUTOWORKER_CODEX_BIN=/path/to/codex autoworker
+```
+
+Codex 启动时默认加 `--no-alt-screen`，避免 tmux 里滚动体验被备用屏幕打断。
+
+tmux 交互建议：
+
+- autoworker session 会开启 `mouse on`，便于在 macOS 终端里直接点选 pane、滚轮查看历史。
+- 键盘切 pane 可用 tmux 默认前缀：`Ctrl-b` 后按方向键。
+- 滚动可用鼠标滚轮，或 `Ctrl-b` 后按 `[` 进入 copy-mode，再用方向键/PageUp/PageDown 查看。
 
 ## Stop hook 行为
 
 `autoworker` 自带技能内 stop wrapper：
 
-- worker/code 会话仍然保留 OMX 原生 stop block
-- supervisor/plan 会话直接放行
-- 脏 state（例如 `active=true` 且已有 `completed_at`）可由 wrapper/doctor 路径进一步治理
+- `planner` pane 会直接放行 stop
+- `worker` pane 会继续交给 OMX native stop hook
+- wrapper 优先读取当前 tmux session env 中的 pane-first 字段判断角色
 
 ## 开发与验证
 
 最小 smoke：
 
 ```bash
-npm run smoke:install
+npm test
 ```
+
+仓库内的轻量 smoke 测试源码位于 `src/__tests__/`，通过 TypeScript 编译到 `dist/__tests__/` 后直接用 Node 执行。
 
 ## 发布
 

@@ -9,7 +9,7 @@ const [, , cmd = 'help', ...args] = process.argv;
 const HELP_TEXT = `autoworker - OMX + Codex tmux launcher
 
 Usage:
-  autoworker          Create or reuse repo-scoped planner/worker tmux sessions and enter planner
+  autoworker          Create or reuse one repo tmux session with planner/worker panes and enter planner
   autoworker launch   Explicit launch entrypoint
   autoworker setup    Install autoworker skills and patch hooks
   autoworker doctor   Check local installation health
@@ -18,8 +18,9 @@ Usage:
   autoworker help     Show this help message
 
 Session Behavior:
-  planner             Planner session for the current repository
-  worker              Worker session for the current repository
+  <dirname>           Repo session for the current repository
+  planner pane        Planner pane in the main window
+  worker pane         Worker pane in the main window
 
 Launch Rules:
   No arguments        Same as: autoworker launch
