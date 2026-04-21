@@ -43,11 +43,20 @@ npx autoworker setup
 ## 命令
 
 ```bash
+autoworker
+autoworker launch
 autoworker setup
 autoworker doctor
 autoworker status
 autoworker uninstall
 ```
+
+默认直接执行 `autoworker` 时，会以当前目录为 `cwd` 创建或复用两个 tmux session：
+
+- `planner`
+- `worker`
+
+如果 session 已存在，不会销毁，只会复用并输出 `created` / `reused` 状态。
 
 ## Stop hook 行为
 

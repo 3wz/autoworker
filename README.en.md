@@ -39,11 +39,20 @@ The installer will:
 ## Commands
 
 ```bash
+autoworker
+autoworker launch
 autoworker setup
 autoworker doctor
 autoworker status
 autoworker uninstall
 ```
+
+Running `autoworker` with no arguments now defaults to launch mode. It uses the current directory as `cwd` and creates or reuses two tmux sessions:
+
+- `planner`
+- `worker`
+
+If a session already exists, it is reused without being killed, and the CLI prints `created` or `reused` for each session.
 
 ## Stop hook behavior
 

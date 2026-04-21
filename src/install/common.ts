@@ -61,6 +61,30 @@ export function commandOk(command: string, args: string[] = ['--version']) {
   return result.status === 0;
 }
 
+export function tmuxArgs(args: string[]) {
+  const socketPath = process.env.AUTOWORKER_TMUX_SOCKET;
+  if (!socketPath) return args;
+  return ['-S', socketPath, ...args];
+}
+
+export function tmuxCommandOk(args: string[]) {
+  const result = spawnSync('tmux', tmuxArgs(args), { encoding: 'utf8' });
+  return result.status === 0;
+}
+
+export function ensureTmuxSession(sessionName: string, cwd: string): 'created' | 'reused' {
+  if (tmuxCommandOk(['has-session', '-t', sessionName])) {
+    return 'reused';
+  }
+  const result = spawnSync('tmux', tmuxArgs(['new-session', '-d', '-s', sessionName, '-c', cwd]), {
+    encoding: 'utf8'
+  });
+  if (result.status !== 0) {
+    throw new Error(result.stderr.trim() || `tmux new-session failed for ${sessionName}`);
+  }
+  return 'created';
+}
+
 export function requireOmx(skip = false) {
   if (skip || process.env.AUTOWORKER_SKIP_OMX_CHECK === '1') return;
   if (!commandOk('omx')) {
