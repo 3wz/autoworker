@@ -5,8 +5,37 @@ import subprocess
 import sys
 from pathlib import Path
 
-CODEX_NATIVE_HOOK = "/Users/wz/.nvm/versions/node/v24.13.0/lib/node_modules/oh-my-codex/dist/scripts/codex-native-hook.js"
 STATE_FILENAMES = ("autoworker-state.json",)
+
+
+def resolve_native_hook() -> str | None:
+    explicit = os.environ.get('AUTOWORKER_CODEX_NATIVE_HOOK', '').strip()
+    if explicit and Path(explicit).expanduser().exists():
+        return str(Path(explicit).expanduser())
+
+    candidates = [
+        Path.home() / '.nvm' / 'versions' / 'node' / 'v24.13.0' / 'lib' / 'node_modules' / 'oh-my-codex' / 'dist' / 'scripts' / 'codex-native-hook.js',
+        Path('/usr/local/lib/node_modules/oh-my-codex/dist/scripts/codex-native-hook.js'),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    probe = subprocess.run(
+        [
+            'node',
+            '-e',
+            "const path=require('node:path'); const resolved=require.resolve('oh-my-codex/package.json'); process.stdout.write(path.join(path.dirname(resolved),'dist','scripts','codex-native-hook.js'));",
+        ],
+        text=True,
+        capture_output=True,
+        env=os.environ.copy(),
+    )
+    if probe.returncode == 0:
+        candidate = Path(probe.stdout.strip())
+        if candidate.exists():
+            return str(candidate)
+    return None
 
 
 def safe_read_json(path: Path):
@@ -172,8 +201,13 @@ def main():
         sys.stdout.write(json.dumps({"decision": "allow"}))
         return 0
 
+    native_hook = resolve_native_hook()
+    if not native_hook:
+        sys.stdout.write(raw if raw.strip() else '{}')
+        return 0
+
     proc = subprocess.run(
-        ["node", CODEX_NATIVE_HOOK],
+        ["node", native_hook],
         input=raw,
         text=True,
         capture_output=True,
