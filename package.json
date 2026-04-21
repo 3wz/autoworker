@@ -1,5 +1,5 @@
 {
-  "name": "autoworker",
+  "name": "@shuian/autoworker",
   "version": "0.1.0",
   "description": "Autoworker is an OMX + Codex supervision layer for long-running worker sessions.",
   "type": "module",

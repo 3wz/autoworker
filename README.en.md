@@ -27,7 +27,7 @@ Before using `autoworker`, you must already have:
 ## Install
 
 ```bash
-npx autoworker setup
+npx @shuian/autoworker setup
 ```
 
 The installer will:
@@ -96,4 +96,4 @@ The lightweight smoke tests live under `src/__tests__/` and run as compiled Type
 This repo includes:
 
 - CI on push / pull_request
-- npm publish on semver tag pushes such as `v0.1.0`
+- npm publish for `@shuian/autoworker` plus GitHub Release creation on semver tag pushes such as `v0.1.0`

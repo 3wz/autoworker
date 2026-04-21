@@ -31,7 +31,7 @@
 ## 安装
 
 ```bash
-npx autoworker setup
+npx @shuian/autoworker setup
 ```
 
 安装器会：
@@ -100,4 +100,4 @@ npm test
 仓库自带：
 
 - CI：push / pull_request
-- 发布：推送 semver tag（例如 `v0.1.0`）时发布 npm
+- 发布：推送 semver tag（例如 `v0.1.0`）时发布 npm 包 `@shuian/autoworker`，并创建 GitHub Release
