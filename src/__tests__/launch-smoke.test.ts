@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import process from 'node:process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { installFakeCodex, expect, run, runAllowFailure } from '../testing/helpers.js';
 
@@ -102,12 +103,29 @@ try {
   expect(first.includes(`planner_thread=${plannerThread}`), `missing planner thread line:\n${first}`);
   expect(first.includes(`worker_thread=${workerThread}`), `missing worker thread line:\n${first}`);
   expect(first.includes(`codex_bin=${fakeCodexPath}`), `missing codex bin line:\n${first}`);
+  expect(first.includes('supervision=armed'), `missing supervision line:\n${first}`);
 
   const sessionsAfterFirst = run('tmux', ['-S', socketPath, 'list-sessions', '-F', '#{session_name}']);
   expect(sessionsAfterFirst.includes(sessionName), `session missing:\n${sessionsAfterFirst}`);
 
   const repoRoot = run('tmux', ['-S', socketPath, 'show-environment', '-t', sessionName, 'AUTOWORKER_REPO_ROOT']);
   expect(repoRoot === `AUTOWORKER_REPO_ROOT=${realWorktree}`, `unexpected repo root:\n${repoRoot}`);
+  const statePathLine = first.split('\n').find((line) => line.startsWith('state_path='));
+  expect(statePathLine, `missing state path line:\n${first}`);
+  const statePath = statePathLine.slice('state_path='.length);
+  expect(statePath.includes(`${path.sep}.autoworker${path.sep}state${path.sep}autoworker-state.json`), `state should live under .autoworker:\n${statePath}`);
+  const legacyOmxStatePath = path.join(realWorktree, '.omx', 'state', 'autoworker-state.json');
+  const legacyOmxState = await fs.stat(legacyOmxStatePath).catch(() => undefined);
+  expect(!legacyOmxState, `runtime state must not be written under .omx:\n${legacyOmxStatePath}`);
+  const runtimeStateRaw = await fs.readFile(statePath, 'utf8');
+  const runtimeState = JSON.parse(runtimeStateRaw) as Record<string, unknown>;
+  expect(runtimeState.repo === realWorktree, `unexpected runtime repo:\n${runtimeStateRaw}`);
+  expect(runtimeState.tmux_session === sessionName, `unexpected runtime session:\n${runtimeStateRaw}`);
+  expect(runtimeState.tmux_socket_path === socketPath, `unexpected runtime socket:\n${runtimeStateRaw}`);
+  expect(runtimeState.planner_pane, `planner pane missing in state:\n${runtimeStateRaw}`);
+  expect(runtimeState.worker_pane, `worker pane missing in state:\n${runtimeStateRaw}`);
+  expect(runtimeState.watcher_pid, `watcher pid missing in state:\n${runtimeStateRaw}`);
+  process.kill(Number(runtimeState.watcher_pid), 0);
   const mouseOption = run('tmux', ['-S', socketPath, 'show-options', '-t', sessionName, '-v', 'mouse']);
   expect(mouseOption === 'on', `mouse should be enabled for autoworker session:\n${mouseOption}`);
 
@@ -118,6 +136,9 @@ try {
   const paneTitles = run('tmux', ['-S', socketPath, 'list-panes', '-t', sessionName, '-F', '#{pane_id} #{pane_title} #{pane_current_path}']);
   expect(paneTitles.includes(`${plannerPaneId} autoworker:planner ${realWorktree}`), `planner pane missing:\n${paneTitles}`);
   expect(paneTitles.includes(`${workerPaneId} autoworker:worker ${realWorktree}`), `worker pane missing:\n${paneTitles}`);
+  const plannerLeft = Number(run('tmux', ['-S', socketPath, 'display-message', '-p', '-t', plannerPaneId, '#{pane_left}']));
+  const workerLeft = Number(run('tmux', ['-S', socketPath, 'display-message', '-p', '-t', workerPaneId, '#{pane_left}']));
+  expect(plannerLeft < workerLeft, `planner must be left of worker:\nplanner=${plannerPaneId}@${plannerLeft} worker=${workerPaneId}@${workerLeft}`);
 
   const activePaneId = run('tmux', ['-S', socketPath, 'display-message', '-p', '-t', sessionName, '#{window_active} #{pane_id}']);
   expect(activePaneId.endsWith(plannerPaneId), `planner should be active:\n${activePaneId}`);
@@ -132,6 +153,39 @@ try {
   const fakeCodexLog = await fs.readFile(fakeCodexState, 'utf8');
   expect(fakeCodexLog.includes(`resume ${plannerThread} --no-alt-screen`), `planner resume not recorded:\n${fakeCodexLog}`);
   expect(fakeCodexLog.includes(`resume ${workerThread} --no-alt-screen`), `worker resume not recorded:\n${fakeCodexLog}`);
+  run('python3', ['assets/skill-autoworker/scripts/omx-stop-wrapper.py'], {
+    cwd: process.cwd(),
+    env: {
+      ...env,
+      TMUX: `${socketPath},123,0`,
+      TMUX_PANE: workerPaneId
+    },
+    input: JSON.stringify({ cwd: realWorktree })
+  });
+  await delay(400);
+  const plannerInboxDir = path.join(realWorktree, '.autoworker', 'inbox', 'planner');
+  const plannerInboxFiles = (await fs.readdir(plannerInboxDir)).filter((name) => name.endsWith('.json'));
+  expect(plannerInboxFiles.length > 0, `planner inbox event missing:\n${plannerInboxDir}`);
+  const updatedStateRaw = await fs.readFile(statePath, 'utf8');
+  const updatedState = JSON.parse(updatedStateRaw) as Record<string, unknown>;
+  expect(
+    String(updatedState.last_reason || '').includes(':inbox') &&
+    updatedState.pending_supervisor_action === true,
+    `worker stop hook did not enqueue planner inbox event:\n${updatedStateRaw}`
+  );
+  const hookOutput = run('python3', ['assets/skill-autoworker/scripts/autoworker.py', 'hook', '--cwd', realWorktree], {
+    cwd: process.cwd(),
+    env: {
+      ...env,
+      TMUX: `${socketPath},123,0`,
+      TMUX_PANE: plannerPaneId
+    }
+  });
+  await delay(200);
+  const processedInboxDir = path.join(plannerInboxDir, 'processed');
+  const processedFiles = (await fs.readdir(processedInboxDir)).filter((name) => name.endsWith('.json'));
+  expect(processedFiles.length > 0, `planner inbox event was not processed:\n${processedInboxDir}`);
+  expect(hookOutput.includes('$autoworker AUTOWORKER_EVENT'), `planner hook did not surface inbox event:\n${hookOutput}`);
 
   const second = run('node', [path.join(process.cwd(), 'bin', 'autoworker.js')], {
     cwd: worktree,
@@ -157,6 +211,71 @@ try {
   expect(conflict.status !== 0, 'conflicting repo should fail');
   expect((conflict.stderr || '').includes(`tmux session ${sessionName} belongs to another directory`), `unexpected conflict stderr:\n${conflict.stderr}`);
   expect((conflict.stderr || '').includes(realConflictingWorktree) === false, `conflict should point at existing repo root:\n${conflict.stderr}`);
+
+  run('tmux', ['-S', socketPath, 'kill-session', '-t', sessionName]);
+  run('tmux', ['-S', socketPath, 'new-session', '-d', '-s', sessionName, '-c', realWorktree]);
+  const oldPlannerPane = run('tmux', ['-S', socketPath, 'display-message', '-p', '-t', `${sessionName}:0.0`, '#{pane_id}']);
+  const oldWorkerPane = run('tmux', ['-S', socketPath, 'split-window', '-t', `${sessionName}:0.0`, '-h', '-c', realWorktree, '-P', '-F', '#{pane_id}']);
+  run('tmux', ['-S', socketPath, 'select-pane', '-t', oldPlannerPane, '-T', 'autoworker:planner']);
+  run('tmux', ['-S', socketPath, 'select-pane', '-t', oldWorkerPane, '-T', 'autoworker:worker']);
+  run('tmux', ['-S', socketPath, 'set-option', '-t', sessionName, 'mouse', 'off']);
+  run('tmux', ['-S', socketPath, 'set-environment', '-t', sessionName, '-u', 'AUTOWORKER_REPO_ROOT']);
+  run('tmux', ['-S', socketPath, 'set-environment', '-t', sessionName, '-u', 'AUTOWORKER_PLANNER_PANE']);
+  run('tmux', ['-S', socketPath, 'set-environment', '-t', sessionName, '-u', 'AUTOWORKER_WORKER_PANE']);
+  await fs.rm(path.join(realWorktree, '.autoworker'), { recursive: true, force: true });
+
+  const healed = run('node', [path.join(process.cwd(), 'bin', 'autoworker.js')], {
+    cwd: worktree,
+    env
+  });
+  expect(healed.includes(`${sessionName} reused`), `legacy session should be reused:\n${healed}`);
+  const healedRepoRoot = run('tmux', ['-S', socketPath, 'show-environment', '-t', sessionName, 'AUTOWORKER_REPO_ROOT']);
+  const healedPlannerPane = run('tmux', ['-S', socketPath, 'show-environment', '-t', sessionName, 'AUTOWORKER_PLANNER_PANE']).replace('AUTOWORKER_PLANNER_PANE=', '');
+  const healedWorkerPane = run('tmux', ['-S', socketPath, 'show-environment', '-t', sessionName, 'AUTOWORKER_WORKER_PANE']).replace('AUTOWORKER_WORKER_PANE=', '');
+  expect(healedRepoRoot === `AUTOWORKER_REPO_ROOT=${realWorktree}`, `repo root was not repaired:\n${healedRepoRoot}`);
+  expect(healedPlannerPane === oldPlannerPane, `planner pane was not repaired:\n${healedPlannerPane}`);
+  expect(healedWorkerPane === oldWorkerPane, `worker pane was not repaired:\n${healedWorkerPane}`);
+  const healedPlannerLeft = Number(run('tmux', ['-S', socketPath, 'display-message', '-p', '-t', healedPlannerPane, '#{pane_left}']));
+  const healedWorkerLeft = Number(run('tmux', ['-S', socketPath, 'display-message', '-p', '-t', healedWorkerPane, '#{pane_left}']));
+  expect(healedPlannerLeft < healedWorkerLeft, `healed planner must be left of worker:\nplanner=${healedPlannerPane}@${healedPlannerLeft} worker=${healedWorkerPane}@${healedWorkerLeft}`);
+  const healedStatePath = path.join(realWorktree, '.autoworker', 'state', 'autoworker-state.json');
+  const healedStateRaw = await fs.readFile(healedStatePath, 'utf8');
+  const healedState = JSON.parse(healedStateRaw) as Record<string, unknown>;
+  expect(healedState.watcher_pid, `watcher pid missing after healing:\n${healedStateRaw}`);
+  process.kill(Number(healedState.watcher_pid), 0);
+  run('python3', ['assets/skill-autoworker/scripts/omx-stop-wrapper.py'], {
+    cwd: process.cwd(),
+    env: {
+      ...env,
+      TMUX: `${socketPath},123,0`,
+      TMUX_PANE: healedWorkerPane
+    },
+    input: JSON.stringify({ cwd: realWorktree })
+  });
+  await delay(400);
+  const healedInboxDir = path.join(realWorktree, '.autoworker', 'inbox', 'planner');
+  const healedInboxFiles = (await fs.readdir(healedInboxDir)).filter((name) => name.endsWith('.json'));
+  expect(healedInboxFiles.length > 0, `healed planner inbox event missing:\n${healedInboxDir}`);
+  const healedUpdatedStateRaw = await fs.readFile(healedStatePath, 'utf8');
+  const healedUpdatedState = JSON.parse(healedUpdatedStateRaw) as Record<string, unknown>;
+  expect(
+    String(healedUpdatedState.last_reason || '').includes(':inbox') &&
+    healedUpdatedState.pending_supervisor_action === true,
+    `healed worker stop hook did not enqueue planner inbox event:\n${healedUpdatedStateRaw}`
+  );
+  const healedHookOutput = run('python3', ['assets/skill-autoworker/scripts/autoworker.py', 'hook', '--cwd', realWorktree], {
+    cwd: process.cwd(),
+    env: {
+      ...env,
+      TMUX: `${socketPath},123,0`,
+      TMUX_PANE: healedPlannerPane
+    }
+  });
+  await delay(200);
+  const healedProcessedDir = path.join(healedInboxDir, 'processed');
+  const healedProcessedFiles = (await fs.readdir(healedProcessedDir)).filter((name) => name.endsWith('.json'));
+  expect(healedProcessedFiles.length > 0, `healed planner inbox event was not processed:\n${healedProcessedDir}`);
+  expect(healedHookOutput.includes('$autoworker AUTOWORKER_EVENT'), `healed planner hook did not surface inbox event:\n${healedHookOutput}`);
 
   console.log('launch smoke ok');
 } finally {

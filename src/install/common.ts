@@ -86,6 +86,17 @@ function runTmux(args: string[]) {
   return result.stdout.trim();
 }
 
+function runCommand(command: string, args: string[], options: Parameters<typeof spawnSync>[2] = {}) {
+  const result = spawnSync(command, args, {
+    encoding: 'utf8',
+    ...options
+  });
+  if (result.status !== 0) {
+    throw new Error(String(result.stderr || '').trim() || String(result.stdout || '').trim() || `${command} ${args.join(' ')} failed`);
+  }
+  return result;
+}
+
 function readRealpath(targetPath: string) {
   try {
     return fssync.realpathSync(targetPath);
@@ -222,6 +233,23 @@ function listPaneIds(sessionName: string) {
   return output ? output.split('\n').filter(Boolean) : [];
 }
 
+function listPanes(sessionName: string) {
+  const output = runTmux(['list-panes', '-t', sessionName, '-F', '#{pane_id}\t#{pane_title}\t#{pane_active}\t#{pane_current_path}\t#{pane_left}\t#{pane_top}']);
+  return output
+    ? output.split('\n').filter(Boolean).map((line) => {
+        const [paneId, title, active, currentPath, paneLeft, paneTop] = line.split('\t');
+        return {
+          paneId,
+          title,
+          active,
+          currentPath,
+          paneLeft: Number(paneLeft || 0),
+          paneTop: Number(paneTop || 0)
+        };
+      })
+    : [];
+}
+
 function splitWindow(sessionName: string, cwd: string) {
   return runTmux(['split-window', '-t', `${sessionName}:0.0`, '-h', '-c', cwd, '-P', '-F', '#{pane_id}']);
 }
@@ -231,6 +259,37 @@ function paneRoleFromTitle(paneId: string) {
   if (title === 'autoworker:planner') return 'planner';
   if (title === 'autoworker:worker') return 'worker';
   return undefined;
+}
+
+function repairSessionLayout(sessionName: string, cwd: string) {
+  const panes = listPanes(sessionName);
+  const repoPanes = panes
+    .filter((pane) => readRealpath(pane.currentPath) === cwd)
+    .sort((left, right) => {
+      if (left.paneTop !== right.paneTop) return left.paneTop - right.paneTop;
+      return left.paneLeft - right.paneLeft;
+    });
+
+  if (repoPanes.length < 2) {
+    throw new Error(`tmux session ${sessionName} missing planner/worker pane layout`);
+  }
+
+  const horizontalPanes = repoPanes.filter((pane) => pane.paneTop === repoPanes[0].paneTop);
+  const orderedPanes = horizontalPanes.length >= 2 ? horizontalPanes : repoPanes;
+  const plannerPane = orderedPanes[0].paneId;
+  const workerPane = orderedPanes.find((pane) => pane.paneId !== plannerPane)?.paneId;
+
+  if (!workerPane) {
+    throw new Error(`tmux session ${sessionName} missing worker pane layout`);
+  }
+
+  // Layout is authoritative: planner is always the leftmost repo pane, worker is the next pane to the right.
+  setPaneTitle(plannerPane, 'autoworker:planner');
+  setPaneTitle(workerPane, 'autoworker:worker');
+  setSessionEnvironment(sessionName, 'AUTOWORKER_REPO_ROOT', cwd);
+  setSessionEnvironment(sessionName, 'AUTOWORKER_PLANNER_PANE', plannerPane);
+  setSessionEnvironment(sessionName, 'AUTOWORKER_WORKER_PANE', workerPane);
+  return { plannerPane, workerPane };
 }
 
 function bootstrapCodexPane(paneId: string, role: 'planner' | 'worker', cwd: string, threadName: string) {
@@ -279,21 +338,13 @@ export function ensureRepoTmuxSession(cwd: string) {
   configureSession(sessionName);
 
   const panes = listPaneIds(sessionName);
-  let plannerPane = panes.find((paneId) => paneRoleFromTitle(paneId) === 'planner');
-  let workerPane = panes.find((paneId) => paneRoleFromTitle(paneId) === 'worker');
+  let plannerPane = sessionEnvironment(sessionName, 'AUTOWORKER_PLANNER_PANE') || panes.find((paneId) => paneRoleFromTitle(paneId) === 'planner');
+  let workerPane = sessionEnvironment(sessionName, 'AUTOWORKER_WORKER_PANE') || panes.find((paneId) => paneRoleFromTitle(paneId) === 'worker');
 
-  if (!plannerPane) {
-    plannerPane = panes[0];
-  }
-  if (!workerPane || workerPane === plannerPane) {
-    workerPane = splitWindow(sessionName, realCwd);
-  }
+  if (!plannerPane) plannerPane = panes[0];
+  if (!workerPane || workerPane === plannerPane) workerPane = splitWindow(sessionName, realCwd);
+  ({ plannerPane, workerPane } = repairSessionLayout(sessionName, realCwd));
 
-  setPaneTitle(plannerPane, 'autoworker:planner');
-  setPaneTitle(workerPane, 'autoworker:worker');
-  setSessionEnvironment(sessionName, 'AUTOWORKER_REPO_ROOT', realCwd);
-  setSessionEnvironment(sessionName, 'AUTOWORKER_PLANNER_PANE', plannerPane);
-  setSessionEnvironment(sessionName, 'AUTOWORKER_WORKER_PANE', workerPane);
   const codex = resolveCodexCommand();
   setSessionEnvironment(sessionName, 'AUTOWORKER_CODEX_BIN', codex.path);
   if (codex.version) setSessionEnvironment(sessionName, 'AUTOWORKER_CODEX_VERSION', codex.version);
@@ -312,6 +363,26 @@ export function ensureRepoTmuxSession(cwd: string) {
     codexVersion: codex.version,
     codexCandidates: codex.candidates
   };
+}
+
+export async function armAutoworkerRuntime(cwd: string, plannerPane: string) {
+  const sessionName = repoSessionName(cwd);
+  repairSessionLayout(sessionName, readRealpath(cwd));
+  const runtimeEnv = {
+    ...process.env,
+    AUTOWORKER_TMUX_SOCKET: process.env.AUTOWORKER_TMUX_SOCKET || '',
+    TMUX: `${process.env.AUTOWORKER_TMUX_SOCKET || ''},0,0`,
+    TMUX_PANE: plannerPane
+  };
+  runCommand('python3', [assetPath('skill-autoworker', 'scripts', 'autoworker.py'), 'start', '--cwd', cwd], {
+    env: runtimeEnv
+  });
+  const statePath = path.join(cwd, '.autoworker', 'state', 'autoworker-state.json');
+  const state = await readJsonIfExists<Record<string, unknown>>(statePath);
+  if (!state) {
+    throw new Error(`autoworker runtime state missing after launch: ${statePath}`);
+  }
+  return { statePath, state };
 }
 
 export function enterTmuxSession(sessionName: string, plannerPane: string) {

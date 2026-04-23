@@ -80,6 +80,7 @@ tmux interaction tips:
 - the `planner` pane is allowed to stop directly
 - the `worker` pane still goes through the OMX native stop hook
 - the wrapper reads pane-first role data from tmux session env
+- runtime state and logs are written under the repo-local `.autoworker/`
 
 ## Development
 

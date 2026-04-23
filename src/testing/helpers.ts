@@ -40,6 +40,10 @@ if [[ -n "$state_file" ]]; then
   printf '%s\\n' "$*" >> "$state_file"
 fi
 echo "OpenAI Codex"
+if [[ "\${1:-}" == "exec" && "\${2:-}" == "resume" ]]; then
+  echo "submitted to session \${3:-}"
+  exit 0
+fi
 if [[ "\${1:-}" == "resume" ]]; then
   echo "resuming session \${2:-}"
   exit 0

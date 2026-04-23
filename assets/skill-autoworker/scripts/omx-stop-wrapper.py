@@ -114,6 +114,37 @@ def current_session_layout(payload: dict):
     }
 
 
+def notify_worker_stop(layout: dict, reason: str, tail: str):
+    autoworker_script = Path(__file__).with_name('autoworker.py')
+    env = os.environ.copy()
+    explicit_socket = resolve_tmux_socket()
+    if explicit_socket:
+        env['AUTOWORKER_TMUX_SOCKET'] = explicit_socket
+    subprocess.run(
+        [
+            'python3',
+            str(autoworker_script),
+            'notify',
+            '--cwd',
+            layout['repo_root'],
+            '--tmux-session',
+            layout['session_name'],
+            '--planner-pane',
+            layout['planner_pane'],
+            '--worker-pane',
+            layout['worker_pane'],
+            '--reason',
+            reason,
+            '--tail',
+            tail,
+        ],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+
 def iter_state_candidates(start: str | None):
     if not start:
         return
@@ -124,7 +155,7 @@ def iter_state_candidates(start: str | None):
     if path.is_file():
         path = path.parent
     for base in (path, *path.parents):
-        state_dir = base / '.omx' / 'state'
+        state_dir = base / '.autoworker' / 'state'
         for name in STATE_FILENAMES:
             candidate = state_dir / name
             if candidate.exists():
@@ -197,9 +228,13 @@ def main():
         except Exception:
             payload = {}
 
-    if should_bypass_stop(payload):
+    layout = current_session_layout(payload)
+    current_pane = current_tmux_pane()
+    if layout and current_pane == layout.get('planner_pane') and current_pane != layout.get('worker_pane'):
         sys.stdout.write(json.dumps({"decision": "allow"}))
         return 0
+    if layout and current_pane == layout.get('worker_pane'):
+        notify_worker_stop(layout, 'worker-stop-hook', 'worker stop hook triggered')
 
     native_hook = resolve_native_hook()
     if not native_hook:

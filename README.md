@@ -84,6 +84,7 @@ tmux 交互建议：
 - `planner` pane 会直接放行 stop
 - `worker` pane 会继续交给 OMX native stop hook
 - wrapper 优先读取当前 tmux session env 中的 pane-first 字段判断角色
+- 运行时状态与日志默认写到仓库内的 `.autoworker/`
 
 ## 开发与验证
 

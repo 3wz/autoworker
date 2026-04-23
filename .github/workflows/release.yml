@@ -21,6 +21,13 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm pack
+      - name: Generate release notes
+        run: node .github/scripts/generate-release-notes.mjs
+        env:
+          RELEASE_VERIFICATION_COMMANDS: |-
+            npm test
+            npm pack --dry-run
+            release workflow
       - run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -28,3 +35,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: shuian-autoworker-*.tgz
+          body_path: release-notes.md

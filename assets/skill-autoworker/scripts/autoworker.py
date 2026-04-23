@@ -52,6 +52,9 @@ def safe_write_json(path: Path, data: Any) -> None:
 
 
 def resolve_tmux_socket() -> str | None:
+    explicit = os.environ.get("AUTOWORKER_TMUX_SOCKET", "").strip()
+    if explicit:
+        return explicit
     raw = os.environ.get("TMUX", "")
     if raw and "," in raw:
         return raw.split(",", 1)[0]
@@ -210,8 +213,8 @@ def signature_for(pane: dict[str, str], tail: str) -> str:
 
 
 def repo_state_paths(cwd: Path) -> tuple[Path, Path]:
-    omx = cwd / ".omx"
-    return omx / "state" / "autoworker-state.json", omx / "logs" / "autoworker-watch.log"
+    runtime = cwd / ".autoworker"
+    return runtime / "state" / "autoworker-state.json", runtime / "logs" / "autoworker-watch.log"
 
 
 def path_is_within(path_str: str | None, root_str: str | None) -> bool:
@@ -375,6 +378,54 @@ def send_prompt_to_pane(
         elif pane_has_queued_codex_submission(visible):
             run_tmux(["send-keys", "-t", pane_target, "C-m"], socket_path=socket_path, check=False)
             time.sleep(0.15)
+
+
+def planner_inbox_paths(cwd: Path) -> tuple[Path, Path]:
+    base = cwd / ".autoworker" / "inbox" / "planner"
+    return base, base / "processed"
+
+
+def enqueue_planner_event(cwd: Path, state: dict[str, Any], reason: str, tail: str) -> Path:
+    inbox_dir, _ = planner_inbox_paths(cwd)
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    event = {
+        "event_id": f"{int(time.time() * 1000)}-{os.getpid()}",
+        "created_at": now_iso(),
+        "reason": reason,
+        "repo": state.get("repo") or str(cwd),
+        "tmux_session": state.get("tmux_session"),
+        "planner_pane": state.get("planner_pane"),
+        "worker_pane": state.get("worker_pane"),
+        "worker_session": state.get("worker_session"),
+        "tail": tail_excerpt(tail),
+        "message": build_event_message(state, reason, tail),
+    }
+    event_path = inbox_dir / f"{event['event_id']}.json"
+    safe_write_json(event_path, event)
+    return event_path
+
+
+def load_planner_events(cwd: Path) -> list[tuple[Path, dict[str, Any]]]:
+    inbox_dir, _ = planner_inbox_paths(cwd)
+    if not inbox_dir.exists():
+        return []
+    events: list[tuple[Path, dict[str, Any]]] = []
+    for file_path in sorted(inbox_dir.glob("*.json")):
+        data = safe_read_json(file_path, default=None)
+        if isinstance(data, dict):
+            events.append((file_path, data))
+    return events
+
+
+def consume_planner_events(cwd: Path) -> list[dict[str, Any]]:
+    _, processed_dir = planner_inbox_paths(cwd)
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    consumed: list[dict[str, Any]] = []
+    for file_path, event in load_planner_events(cwd):
+        processed_path = processed_dir / file_path.name
+        file_path.rename(processed_path)
+        consumed.append(event)
+    return consumed
 
 
 def ensure_watcher(cwd: Path, state: dict[str, Any], log_path: Path) -> dict[str, Any]:
@@ -541,8 +592,50 @@ def cmd_hook(args: argparse.Namespace) -> int:
         state["tmux_session"] = sess
         state["planner_session"] = sess
         state["worker_session"] = sess
+    pane = current_pane(socket_path=socket_path)
+    if pane and pane == state.get("planner_pane"):
+        events = consume_planner_events(cwd)
+        if events:
+            last_event = events[-1]
+            state["pending_supervisor_action"] = True
+            state["last_event_at"] = last_event.get("created_at") or now_iso()
+            state["last_reason"] = f"inbox:{last_event.get('reason', 'worker-stop')}"
+            state["updated_at"] = now_iso()
+            print(str(last_event.get("message") or build_event_message(state, last_event.get('reason', 'worker-stop'), last_event.get('tail', ''))))
     state = ensure_watcher(cwd, state, log_path)
     safe_write_json(state_path, state)
+    return 0
+
+
+def cmd_notify(args: argparse.Namespace) -> int:
+    cwd = Path(args.cwd).resolve()
+    state_path, _, state = load_state(cwd)
+    socket_path = resolve_tmux_socket() or state.get("tmux_socket_path")
+    state = sync_state_with_layout(cwd, state, socket_path)
+    if args.tmux_session:
+        state["tmux_session"] = args.tmux_session
+        state["planner_session"] = args.tmux_session
+        state["worker_session"] = args.tmux_session
+    if args.planner_pane:
+        state["planner_pane"] = args.planner_pane
+    if args.worker_pane:
+        state["worker_pane"] = args.worker_pane
+    planner_pane = state.get("planner_pane")
+    worker_pane = state.get("worker_pane")
+    if not planner_pane or not worker_pane:
+        print("autoworker: notify 缺少 planner/worker pane", file=sys.stderr)
+        return 1
+    event_path = enqueue_planner_event(cwd, state, args.reason, args.tail or f"worker process exited in {worker_pane}")
+    state["last_reason"] = f"{args.reason}:inbox"
+    state["enabled"] = True
+    state["last_event_at"] = now_iso()
+    state["last_worker_state"] = "stopped"
+    state["pending_supervisor_action"] = True
+    state["last_event_signature"] = f"inbox:{args.reason}:{worker_pane}:{state['last_event_at']}"
+    state["event_count"] = int(state.get("event_count", 0)) + 1
+    state["updated_at"] = now_iso()
+    safe_write_json(state_path, state)
+    print(f"autoworker: 已写入 planner inbox={event_path} worker={worker_pane} reason={args.reason}")
     return 0
 
 
@@ -565,14 +658,14 @@ def _notify_supervisor_once(cwd: Path, state_path: Path, state: dict[str, Any], 
     sig = signature_for(pane, tail)
     should_send, reason = should_notify_supervisor(state, pane, tail, sig)
     if should_send:
-        message = build_event_message(state, reason, tail)
-        send_prompt_to_pane(planner_pane, message, socket_path=socket_path, clear_input=False, submit_key_presses=2)
+        event_path = enqueue_planner_event(cwd, state, reason, tail)
         state["last_event_at"] = now_iso()
-        state["last_reason"] = reason
+        state["last_reason"] = f"{reason}:inbox"
         state["event_count"] = int(state.get("event_count", 0)) + 1
+        state["pending_supervisor_action"] = True
         state["updated_at"] = now_iso()
         safe_write_json(state_path, state)
-        print(f"[{now_iso()}] stop-hook->supervisor worker={worker_pane} reason={reason}", flush=True)
+        print(f"[{now_iso()}] stop-hook->inbox worker={worker_pane} reason={reason} path={event_path}", flush=True)
         return 0
     state["last_reason"] = reason
     state["updated_at"] = now_iso()
@@ -836,14 +929,13 @@ def cmd_watch(args: argparse.Namespace) -> int:
         sig = signature_for(pane, tail)
         should_send, reason = should_notify_supervisor(state, pane, tail, sig)
         if should_send:
-            message = build_event_message(state, reason, tail)
-            send_prompt_to_pane(planner_pane, message, socket_path=socket_path, clear_input=False, submit_key_presses=2)
+            event_path = enqueue_planner_event(cwd, state, reason, tail)
             state["last_event_at"] = now_iso()
-            state["last_reason"] = reason
+            state["last_reason"] = f"{reason}:inbox"
             state["event_count"] = int(state.get("event_count", 0)) + 1
             state["updated_at"] = now_iso()
             safe_write_json(state_path, state)
-            print(f"[{now_iso()}] event->supervisor worker={worker_pane} reason={reason}", flush=True)
+            print(f"[{now_iso()}] event->inbox worker={worker_pane} reason={reason} path={event_path}", flush=True)
         else:
             if maybe_auto_dispatch(state, state_path, socket_path, worker_pane, reason):
                 time.sleep(max(1, int(state.get("poll_ms", 15000)) / 1000))
@@ -857,7 +949,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="autoworker supervisor/watchdog")
     sub = p.add_subparsers(dest="cmd", required=True)
-    for name in ["start", "status", "stop", "retarget", "hook", "stop-hook", "watch", "dispatch", "dispatch-batch"]:
+    for name in ["start", "status", "stop", "retarget", "hook", "stop-hook", "watch", "dispatch", "dispatch-batch", "notify"]:
         sp = sub.add_parser(name)
         sp.add_argument("--cwd", default=os.getcwd())
         if name in {"start", "retarget"}:
@@ -881,6 +973,12 @@ def build_parser() -> argparse.ArgumentParser:
             sp.add_argument("--step", action='append', default=[])
             sp.add_argument("--verify", action='append', default=[])
             sp.add_argument("--stop-when", action='append', default=[])
+        if name == "notify":
+            sp.add_argument("--tmux-session", default=None)
+            sp.add_argument("--planner-pane", default=None)
+            sp.add_argument("--worker-pane", default=None)
+            sp.add_argument("--reason", default="worker-stop-hook")
+            sp.add_argument("--tail", default="")
     return p
 
 
@@ -905,6 +1003,8 @@ def main() -> int:
             return cmd_dispatch(args)
         if args.cmd == "dispatch-batch":
             return cmd_dispatch_batch(args)
+        if args.cmd == "notify":
+            return cmd_notify(args)
     except Exception as exc:
         print(f"autoworker error: {exc}", file=sys.stderr)
         return 1
